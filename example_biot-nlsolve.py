@@ -70,6 +70,46 @@ def create_geometry_rectangle(
     return mesh, facet_tag, ds
 
 
+def set_boundary_conditions(facet_tags, V, Vu, Vp):
+    # Interpolate dirichlet conditions
+    def bc_vec_zero(x):
+        return np.zeros((2, x.shape[1]), dtype=PETSc.ScalarType)
+
+    def bc_scalar_zero(x):
+        return np.zeros((1, x.shape[1]), dtype=PETSc.ScalarType)
+
+    uD = dfem.Function(Vu)
+    uD.interpolate(bc_vec_zero)
+    pD = dfem.Function(Vp)
+    pD.interpolate(bc_scalar_zero)
+
+    list_bc = []
+
+    # Displacement boundaries
+    # Bottom
+    facets = facet_tags.indices[facet_tags.values == 2]
+    dofs = dfem.locate_dofs_topological((V.sub(0).sub(1), Vu.sub(1)), 1, facets)
+    list_bc.append(dfem.dirichletbc(uD, dofs, V.sub(0)))
+
+    # Left
+    facets = facet_tags.indices[facet_tags.values == 1]
+    dofs = dfem.locate_dofs_topological((V.sub(0).sub(0), Vu.sub(0)), 1, facets)
+    list_bc.append(dfem.dirichletbc(uD, dofs, V.sub(0)))
+
+    # Right
+    facets = facet_tags.indices[facet_tags.values == 3]
+    dofs = dfem.locate_dofs_topological((V.sub(0).sub(0), Vu.sub(0)), 1, facets)
+    list_bc.append(dfem.dirichletbc(uD, dofs, V.sub(0)))
+
+    # Pressure boundaries
+    # Top
+    facets = facet_tags.indices[facet_tags.values == 4]
+    dofs = dfem.locate_dofs_topological((V.sub(1), Vp), 1, facets)
+    list_bc.append(dfem.dirichletbc(pD, dofs, V.sub(1)))
+
+    return list_bc
+
+
 # --- Problem setup ---
 # --- Set geometry
 domain, facet_tags, ds = create_geometry_rectangle([1.0, 5.0], [9, 70])
@@ -120,67 +160,8 @@ load_term = ufl.inner(v_u, load) * ds(4)
 # Add volumetric contributions of weak form
 weak_form = res_BLM + res_BMO - load_term
 
-
 # --- Set boundary conditions
-# Interpolate dirichlet conditions
-def bc_vec_zero(x):
-    return np.zeros((2, x.shape[1]), dtype=PETSc.ScalarType)
-
-
-def bc_scalar_zero(x):
-    return np.zeros((1, x.shape[1]), dtype=PETSc.ScalarType)
-
-
-uD = dfem.Function(Vu)
-uD.interpolate(bc_vec_zero)
-pD = dfem.Function(Vp)
-pD.interpolate(bc_scalar_zero)
-
-
-list_bc = []
-
-# Displacement boundaries
-# Bottom
-facets = facet_tags.indices[facet_tags.values == 2]
-dofs = dfem.locate_dofs_topological(
-    (
-        V_up.sub(0).sub(1),
-        Vu.sub(1),
-    ),
-    1,
-    facets,
-)
-list_bc.append(dfem.dirichletbc(uD, dofs, V_up.sub(0)))
-
-# Left
-facets = facet_tags.indices[facet_tags.values == 1]
-dofs = dfem.locate_dofs_topological(
-    (
-        V_up.sub(0).sub(0),
-        Vu.sub(0),
-    ),
-    1,
-    facets,
-)
-list_bc.append(dfem.dirichletbc(uD, dofs, V_up.sub(0)))
-
-# Right
-facets = facet_tags.indices[facet_tags.values == 3]
-dofs = dfem.locate_dofs_topological(
-    (
-        V_up.sub(0).sub(0),
-        Vu.sub(0),
-    ),
-    1,
-    facets,
-)
-list_bc.append(dfem.dirichletbc(uD, dofs, V_up.sub(0)))
-
-# Pressure boundaries
-# Top
-facets = facet_tags.indices[facet_tags.values == 4]
-dofs = dfem.locate_dofs_topological((V_up.sub(1), Vp), 1, facets)
-list_bc.append(dfem.dirichletbc(pD, dofs, V_up.sub(1)))
+list_bc = set_boundary_conditions(facet_tags, V_up, Vu, Vp)
 
 # --- Set Solver
 # Initialise non-linear problem
@@ -205,7 +186,7 @@ time = 0.0
 uh_n.x.array[:] = 0.0
 
 # Initialize export ParaView
-outfile = dolfinx.io.XDMFFile(MPI.COMM_WORLD, "test_terzaghi.xdmf", "w")
+outfile = dolfinx.io.XDMFFile(MPI.COMM_WORLD, "test_terzaghi-NewtonSolver.xdmf", "w")
 outfile.write_mesh(domain)
 
 # --- Solve problem ---

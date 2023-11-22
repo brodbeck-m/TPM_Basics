@@ -1,5 +1,5 @@
 {
-	"name": "dolfinx-nightly",
+	"name": "dolfinx-stable",
 	"build": {
 		"dockerfile": "Dockerfile",
 		"cacheFrom": "brewblox/firmware-devcontainer:bullseye",
