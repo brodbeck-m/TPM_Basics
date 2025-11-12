@@ -4,7 +4,7 @@ A basic solver for poroelasticity, using a non-linear variational problem. The g
 ## Instalation
 All the following steps require a working docker and VSCode instalation. Download followingly the lates docker image of DOLFINX from [dockerhub][1], be executing
 ```bash
-docker pull dolfinx/dolfinx:stable
+docker pull dolfinx/dolfinx:v0.10.0-r1
 ```
 After downloading the conatiner open this repository within VSCode. It will set-up a dev environement.
 
