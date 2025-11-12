@@ -4,12 +4,11 @@ import numpy as np
 from petsc4py import PETSc
 from typing import List
 
-import dolfinx
-import dolfinx.fem as dfem
-import dolfinx.fem.petsc as dfem_petsc
-import dolfinx.mesh as dmesh
-import dolfinx.nls.petsc as dnls_petsc
-from dolfinx.mesh import CellType, DiagonalType, create_rectangle
+import basix
+import basix.ufl
+
+from dolfinx import fem, io, mesh, default_real_type
+import dolfinx.fem.petsc as fem_petsc
 import ufl
 
 from petsc4py.PETSc import ScalarType
@@ -35,14 +34,14 @@ bc_qtop = -10000
 def create_geometry_rectangle(
     l_domain: List[float],
     n_elmt: List[int],
-    diagonal: DiagonalType = DiagonalType.left,
+    diagonal: mesh.DiagonalType = mesh.DiagonalType.left,
 ):
     # --- Create mesh
-    mesh = create_rectangle(
+    msh = mesh.create_rectangle(
         MPI.COMM_WORLD,
         [np.array([0, 0]), np.array([l_domain[0], l_domain[1]])],
         [n_elmt[0], n_elmt[1]],
-        cell_type=CellType.triangle,
+        cell_type=mesh.CellType.triangle,
         diagonal=diagonal,
     )
     tol = 1.0e-14
@@ -55,22 +54,28 @@ def create_geometry_rectangle(
 
     facet_indices, facet_markers = [], []
     for marker, locator in boundaries:
-        facets = dmesh.locate_entities(mesh, 1, locator)
+        facets = mesh.locate_entities(msh, 1, locator)
         facet_indices.append(facets)
         facet_markers.append(np.full(len(facets), marker))
 
     facet_indices = np.array(np.hstack(facet_indices), dtype=np.int32)
     facet_markers = np.array(np.hstack(facet_markers), dtype=np.int32)
     sorted_facets = np.argsort(facet_indices)
-    facet_tag = dmesh.meshtags(
-        mesh, 1, facet_indices[sorted_facets], facet_markers[sorted_facets]
+    facet_tag = mesh.meshtags(
+        msh, 1, facet_indices[sorted_facets], facet_markers[sorted_facets]
     )
-    ds = ufl.Measure("ds", domain=mesh, subdomain_data=facet_tag)
+    ds = ufl.Measure("ds", domain=msh, subdomain_data=facet_tag)
 
-    return mesh, facet_tag, ds
+    return msh, facet_tag, ds
 
 
 def set_boundary_conditions(facet_tags, V, Vu, Vp):
+    # The spatial dimension
+    gdim = V.mesh.geometry.dim
+
+    # Required connectivity
+    V.mesh.topology.create_connectivity(gdim - 1, gdim)
+
     # Interpolate dirichlet conditions
     def bc_vec_zero(x):
         return np.zeros((2, x.shape[1]), dtype=PETSc.ScalarType)
@@ -78,9 +83,9 @@ def set_boundary_conditions(facet_tags, V, Vu, Vp):
     def bc_scalar_zero(x):
         return np.zeros((1, x.shape[1]), dtype=PETSc.ScalarType)
 
-    uD = dfem.Function(Vu)
+    uD = fem.Function(Vu)
     uD.interpolate(bc_vec_zero)
-    pD = dfem.Function(Vp)
+    pD = fem.Function(Vp)
     pD.interpolate(bc_scalar_zero)
 
     list_bc = []
@@ -88,24 +93,24 @@ def set_boundary_conditions(facet_tags, V, Vu, Vp):
     # Displacement boundaries
     # Bottom
     facets = facet_tags.indices[facet_tags.values == 2]
-    dofs = dfem.locate_dofs_topological((V.sub(0).sub(1), Vu.sub(1)), 1, facets)
-    list_bc.append(dfem.dirichletbc(uD, dofs, V.sub(0)))
+    dofs = fem.locate_dofs_topological((V.sub(0).sub(1), Vu.sub(1)), 1, facets)
+    list_bc.append(fem.dirichletbc(uD, dofs, V.sub(0)))
 
     # Left
     facets = facet_tags.indices[facet_tags.values == 1]
-    dofs = dfem.locate_dofs_topological((V.sub(0).sub(0), Vu.sub(0)), 1, facets)
-    list_bc.append(dfem.dirichletbc(uD, dofs, V.sub(0)))
+    dofs = fem.locate_dofs_topological((V.sub(0).sub(0), Vu.sub(0)), 1, facets)
+    list_bc.append(fem.dirichletbc(uD, dofs, V.sub(0)))
 
     # Right
     facets = facet_tags.indices[facet_tags.values == 3]
-    dofs = dfem.locate_dofs_topological((V.sub(0).sub(0), Vu.sub(0)), 1, facets)
-    list_bc.append(dfem.dirichletbc(uD, dofs, V.sub(0)))
+    dofs = fem.locate_dofs_topological((V.sub(0).sub(0), Vu.sub(0)), 1, facets)
+    list_bc.append(fem.dirichletbc(uD, dofs, V.sub(0)))
 
     # Pressure boundaries
     # Top
     facets = facet_tags.indices[facet_tags.values == 4]
-    dofs = dfem.locate_dofs_topological((V.sub(1), Vp), 1, facets)
-    list_bc.append(dfem.dirichletbc(pD, dofs, V.sub(1)))
+    dofs = fem.locate_dofs_topological((V.sub(1), Vp), 1, facets)
+    list_bc.append(fem.dirichletbc(pD, dofs, V.sub(1)))
 
     return list_bc
 
@@ -115,17 +120,23 @@ def set_boundary_conditions(facet_tags, V, Vu, Vp):
 domain, facet_tags, ds = create_geometry_rectangle([1.0, 5.0], [9, 70])
 
 # --- Set function-space
-Pu = ufl.VectorElement("CG", domain.ufl_cell(), sdisc_eorder[0])
-Pp = ufl.FiniteElement("CG", domain.ufl_cell(), sdisc_eorder[1])
+Pu = basix.ufl.element(
+    "Lagrange",
+    domain.basix_cell(),
+    degree=sdisc_eorder[0],
+    shape=(domain.geometry.dim,),
+    dtype=default_real_type,
+)
+Pp = basix.ufl.element(
+    "Lagrange", domain.basix_cell(), degree=sdisc_eorder[1], dtype=default_real_type
+)
 
-V_up = dfem.FunctionSpace(domain, ufl.MixedElement(Pu, Pp))
+V_up = fem.functionspace(domain, basix.ufl.mixed_element([Pu, Pp]))
 
 V_u, up_to_u = V_up.sub(0).collapse()
-Vu = dfem.FunctionSpace(domain, Pu)
-Vp = dfem.FunctionSpace(domain, Pp)
+V_p, up_to_p = V_up.sub(1).collapse()
 
-uh = dfem.Function(V_up)
-uh_n = dfem.Function(V_u)
+uh, uh_u, uh_p = fem.Function(V_up), fem.Function(V_u), fem.Function(V_p)
 
 # --- Set weak form
 # Trial- and test functions
@@ -136,7 +147,7 @@ v_u, v_p = ufl.TestFunctions(V_up)
 EtS = ufl.sym(ufl.grad(u))
 
 # Solid velocity
-vtS = (u - uh_n) / tdisc_dt
+vtS = (u - uh_u) / tdisc_dt
 
 # Stress
 mat_lhs = (mat_nuhS * mat_EhS) / ((1 + mat_nuhS) * (1 - 2 * mat_nuhS))
@@ -149,7 +160,7 @@ P = PhSE - p * ufl.Identity(len(u))
 nhFwtFS0S = mat_ktD * ufl.grad(p)
 
 # Load
-qtop = dfem.Constant(domain, ScalarType(bc_qtop))
+qtop = fem.Constant(domain, ScalarType(bc_qtop))
 load = qtop * ufl.FacetNormal(domain)
 
 # Residual
@@ -161,19 +172,19 @@ load_term = ufl.inner(v_u, load) * ds(4)
 weak_form = res_BLM + res_BMO - load_term
 
 # --- Set boundary conditions
-list_bc = set_boundary_conditions(facet_tags, V_up, Vu, Vp)
+list_bc = set_boundary_conditions(facet_tags, V_up, V_u, V_p)
 
 # --- Set Solver
 # Compile forms
-a = dfem.form(ufl.lhs(weak_form))
-l = dfem.form(ufl.rhs(weak_form))
+a = fem.form(ufl.lhs(weak_form))
+l = fem.form(ufl.rhs(weak_form))
 
 # Assembly equation system
-A = dfem_petsc.assemble_matrix(a, bcs=list_bc)
+A = fem_petsc.assemble_matrix(a, bcs=list_bc)
 A.assemble()
 
 # Initialise RHS
-L = dfem_petsc.create_vector(l)
+L = fem_petsc.create_vector(fem.extract_function_spaces(l))
 
 # Set solver
 solver = PETSc.KSP().create(MPI.COMM_WORLD)
@@ -191,11 +202,14 @@ pc.setFactorSolverType("mumps")
 time = 0.0
 
 # Initialize history values
-uh_n.x.array[:] = 0.0
+uh_u.x.array[:] = 0.0
 
 # Initialize export ParaView
-outfile = dolfinx.io.XDMFFile(MPI.COMM_WORLD, "test_terzaghi-LinProb.xdmf", "w")
-outfile.write_mesh(domain)
+uh_u.name = "u_h"
+outfile_u = io.VTXWriter(MPI.COMM_WORLD, "terzaghi-u.bp", [uh_u], engine="BP4")
+
+uh_p.name = "p_h"
+outfile_p = io.VTXWriter(MPI.COMM_WORLD, "terzaghi-p.bp", [uh_p], engine="BP4")
 
 # Time loop
 duration_solve = 0.0
@@ -210,28 +224,25 @@ for n in range(300):
     with L.localForm() as loc_L:
         loc_L.set(0)
 
-    dfem.petsc.assemble_vector(L, l)
-    dfem.apply_lifting(L, [a], [list_bc])
+    fem_petsc.assemble_vector(L, l)
+    fem.apply_lifting(L, [a], [list_bc])
     L.ghostUpdate(addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.REVERSE)
 
-    dfem.set_bc(L, list_bc)
+    fem.set_bc(L, list_bc)
 
     # Solve equation system
-    solver(L, uh.vector)
+    solver(L, uh.x.petsc_vec)
     uh.x.scatter_forward()
 
     duration_solve += MPI.Wtime()
 
     PETSc.Sys.Print("Phys. Time {:.4f}, Calc. Time {:.4f}".format(time, duration_solve))
 
-    uh_n.x.array[:] = uh.x.array[up_to_u]
+    uh_u.x.array[:] = uh.x.array[up_to_u]
+    uh_p.x.array[:] = uh.x.array[up_to_p]
 
-    u = uh.sub(0).collapse()
-    p = uh.sub(1).collapse()
+    outfile_u.write(time)
+    outfile_p.write(time)
 
-    u.name = "u_h"
-    outfile.write_function(u, time)
-    p.name = "p_h"
-    outfile.write_function(p, time)
-
-outfile.close()
+outfile_u.close()
+outfile_p.close()
