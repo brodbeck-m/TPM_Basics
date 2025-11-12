@@ -1,5 +1,5 @@
 {
-	"name": "dolfinx-stable",
+	"name": "dolfinx:v0.10.0-r1",
 	"build": {
 		"dockerfile": "Dockerfile",
 		"cacheFrom": "brewblox/firmware-devcontainer:bullseye",
@@ -14,7 +14,7 @@
 				"path": "/bin/bash"
 			}
 		},
-		"python.defaultInterpreterPath": "/usr/bin/python3",
+		"python.defaultInterpreterPath": "/dolfinx-env/bin/python3",
 		"[python]": {
 			"editor.defaultFormatter": "ms-python.black-formatter",
 			"editor.formatOnSave": true,
